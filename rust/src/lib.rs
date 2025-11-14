@@ -17,6 +17,8 @@
 //! ```
 
 use sha2::{Digest, Sha256};
+use k256::ecdsa::{SigningKey, VerifyingKey, Signature, signature::{Signer, Verifier} };
+use rand::rngs::OsRng;
 
 /// Computes SHA-256 hash of input data.
 ///
@@ -37,6 +39,42 @@ pub fn hash_data(data: &[u8]) -> Vec<u8> {
 fn hash_pair(left: &[u8], right: &[u8]) -> Vec<u8> {
     let combined = [left, right].concat();
     hash_data(&combined)
+}
+
+pub fn generate_keypair() -> (Vec<u8>, Vec<u8>) {
+    let signing_key = SigningKey::random(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    let private_bytes = signing_key.to_bytes().to_vec();
+    let public_bytes = verifying_key.to_sec1_bytes().to_vec();
+    
+    (private_bytes, public_bytes)
+}
+
+pub fn sign_message(message: &[u8], private_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let signing_key = SigningKey::from_bytes(private_bytes.into())
+        .map_err(|e| format!("Invalid private key: {}", e))?;
+    
+    let signature: Signature = signing_key.sign(message);
+    Ok(signature.to_bytes().to_vec())
+}
+
+pub fn verify_signature(
+    message: &[u8], 
+    signature_bytes: &[u8], 
+    public_bytes: &[u8]
+) -> bool {
+    let verifying_key = match VerifyingKey::from_sec1_bytes(public_bytes) {
+        Ok(key) => key,
+        Err(_) => return false,
+    };
+    
+    let signature = match Signature::from_bytes(signature_bytes.into()) {
+        Ok(sig) => sig,
+        Err(_) => return false,
+    };
+
+    verifying_key.verify(message, &signature).is_ok()
 }
 
 /// Binary Merkle tree for creating cryptographic commitments.
@@ -297,5 +335,48 @@ mod tests {
             let proof = tree.generate_proof(i).unwrap();
             assert!(verify_proof(&proof));
         }
+    }
+
+    #[test]
+    fn test_keypair_generation() {
+        let (private_key, public_key) = generate_keypair();
+        assert_eq!(private_key.len(), 32);
+        assert!(public_key.len() == 33 || public_key.len() == 65);
+    }
+
+    #[test]
+    fn test_sign_and_verify() {
+        let (private_key, public_key) = generate_keypair();
+        let message = b"test message";
+        
+        let signature = sign_message(message, &private_key).unwrap();
+        assert!(verify_signature(message, &signature, &public_key));
+    }
+
+    #[test]
+    fn test_sign_merkle_root() {
+        // Build Merkle tree
+        let data = vec![b"tick1".as_slice(), b"tick2".as_slice()];
+        let tree = MerkleTree::new(data);
+        let root = tree.root();
+        
+        // Generate keys and sign root
+        let (private_key, public_key) = generate_keypair();
+        let signature = sign_message(root, &private_key).unwrap();
+        
+        // Verify signature
+        assert!(verify_signature(root, &signature, &public_key));
+    }
+
+    #[test]
+    fn test_invalid_signature() {
+        let (private_key, public_key) = generate_keypair();
+        let message = b"test message";
+        
+        let signature = sign_message(message, &private_key).unwrap();
+        
+        // Wrong message should fail
+        let wrong_message = b"different message";
+        assert!(!verify_signature(wrong_message, &signature, &public_key));
     }
 }
