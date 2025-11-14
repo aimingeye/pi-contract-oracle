@@ -19,6 +19,9 @@
 use sha2::{Digest, Sha256};
 use k256::ecdsa::{SigningKey, VerifyingKey, Signature, signature::{Signer, Verifier} };
 use rand::rngs::OsRng;
+use serde::{Serialize, Deserialize};
+use pyo3::prelude::*;
+use pyo3::exceptions::PyValueError;
 
 /// Computes SHA-256 hash of input data.
 ///
@@ -41,6 +44,14 @@ fn hash_pair(left: &[u8], right: &[u8]) -> Vec<u8> {
     hash_data(&combined)
 }
 
+/// Generates a new ECDSA keypair using secp256k1 curve (Ethereum standard).
+///
+/// Returns a tuple of (private_key_bytes, public_key_bytes).
+/// Private key is 32 bytes, public key is 33 bytes (compressed format).
+///
+/// # Security
+/// Uses cryptographically secure random number generation (OsRng).
+/// Keep the private key secret!
 pub fn generate_keypair() -> (Vec<u8>, Vec<u8>) {
     let signing_key = SigningKey::random(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
@@ -51,6 +62,14 @@ pub fn generate_keypair() -> (Vec<u8>, Vec<u8>) {
     (private_bytes, public_bytes)
 }
 
+/// Signs a message using ECDSA with a private key.
+///
+/// # Arguments
+/// * `message` - Data to sign (typically a Merkle root)
+/// * `private_bytes` - 32-byte private key
+///
+/// # Returns
+/// 64-byte signature or error if private key is invalid
 pub fn sign_message(message: &[u8], private_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let signing_key = SigningKey::from_bytes(private_bytes.into())
         .map_err(|e| format!("Invalid private key: {}", e))?;
@@ -59,6 +78,15 @@ pub fn sign_message(message: &[u8], private_bytes: &[u8]) -> Result<Vec<u8>, Str
     Ok(signature.to_bytes().to_vec())
 }
 
+/// Verifies an ECDSA signature against a message and public key.
+///
+/// # Arguments
+/// * `message` - Original data that was signed
+/// * `signature_bytes` - 64-byte signature
+/// * `public_bytes` - Public key (33 or 65 bytes)
+///
+/// # Returns
+/// `true` if signature is valid, `false` otherwise
 pub fn verify_signature(
     message: &[u8], 
     signature_bytes: &[u8], 
@@ -93,12 +121,61 @@ pub struct MerkleTree {
 /// Contains the minimal set of sibling hashes needed to recompute
 /// the root hash from a leaf, proving inclusion without revealing
 /// other tree data.
-#[derive(Debug, Clone)]
+///
+/// Can be serialized to JSON for storage and transmission.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleProof {
     pub leaf_index: usize,
+    #[serde(with = "hex_serde")]
     pub leaf_hash: Vec<u8>,
+    #[serde(with = "vec_hex_serde")]
     pub siblings: Vec<Vec<u8>>,
+    #[serde(with = "hex_serde")]
     pub root: Vec<u8>,
+}
+
+// Helper modules for hex serialization
+mod hex_serde {
+    use serde::{Serializer, Deserializer, Deserialize};
+    
+    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(bytes))
+    }
+    
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        hex::decode(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+mod vec_hex_serde {
+    use serde::{Serializer, Deserializer, Deserialize};
+    
+    pub fn serialize<S>(vec_bytes: &Vec<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let hex_strings: Vec<String> = vec_bytes.iter()
+            .map(|bytes| hex::encode(bytes))
+            .collect();
+        serializer.collect_seq(hex_strings)
+    }
+    
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hex_strings = Vec::<String>::deserialize(deserializer)?;
+        hex_strings.iter()
+            .map(|s| hex::decode(s).map_err(serde::de::Error::custom))
+            .collect()
+    }
 }
 
 impl MerkleTree {
@@ -233,6 +310,110 @@ pub fn verify_proof(proof: &MerkleProof) -> bool {
     }
 
     current_hash == proof.root
+}
+
+/// Converts a Merkle proof to JSON string.
+///
+/// # Examples
+///
+/// ```
+/// use pi_oracle_core::{MerkleTree, proof_to_json};
+/// let data = vec![b"tick1".as_slice(), b"tick2".as_slice()];
+/// let tree = MerkleTree::new(data);
+/// let proof = tree.generate_proof(0).unwrap();
+/// let json = proof_to_json(&proof).unwrap();
+/// assert!(json.contains("leaf_index"));
+/// ```
+pub fn proof_to_json(proof: &MerkleProof) -> Result<String, String> {
+    serde_json::to_string_pretty(proof)
+        .map_err(|e| format!("JSON serialization error: {}", e))
+}
+
+/// Loads a Merkle proof from JSON string.
+///
+/// # Examples
+///
+/// ```
+/// use pi_oracle_core::{MerkleTree, proof_to_json, proof_from_json};
+/// let data = vec![b"tick1".as_slice(), b"tick2".as_slice()];
+/// let tree = MerkleTree::new(data);
+/// let proof = tree.generate_proof(0).unwrap();
+/// let json = proof_to_json(&proof).unwrap();
+/// let loaded_proof = proof_from_json(&json).unwrap();
+/// assert_eq!(proof.leaf_index, loaded_proof.leaf_index);
+/// ```
+pub fn proof_from_json(json: &str) -> Result<MerkleProof, String> {
+    serde_json::from_str(json)
+        .map_err(|e| format!("JSON deserialization error: {}", e))
+}
+
+// ================================
+// Python Bindings (PyO3)
+// ================================
+
+#[pyfunction]
+fn py_hash_data(data: Vec<u8>) -> Vec<u8> {
+    hash_data(&data)
+}
+
+#[pyfunction]
+fn py_generate_keypair() -> (Vec<u8>, Vec<u8>) {
+    generate_keypair()
+}
+
+#[pyfunction]
+fn py_sign_message(message: Vec<u8>, private_key: Vec<u8>) -> PyResult<Vec<u8>> {
+    sign_message(&message, &private_key)
+        .map_err(|e| PyErr::new::<PyValueError, _>(e))
+}
+
+#[pyfunction]
+fn py_verify_signature(message: Vec<u8>, signature: Vec<u8>, public_key: Vec<u8>) -> bool {
+    verify_signature(&message, &signature, &public_key)
+}
+
+#[pyclass]
+struct PyMerkleTree {
+    inner: MerkleTree,
+}
+
+#[pymethods]
+impl PyMerkleTree {
+    #[new]
+    fn new(data_items: Vec<Vec<u8>>) -> Self {
+        let refs: Vec<&[u8]> = data_items.iter().map(|v| v.as_slice()).collect();
+        let tree = MerkleTree::new(refs);
+        Self { inner: tree }
+    }
+    
+    fn root(&self) -> Vec<u8> {
+        self.inner.root().to_vec()
+    }
+    
+    fn generate_proof(&self, index: usize) -> PyResult<String> {
+        let proof = self.inner.generate_proof(index)
+            .ok_or_else(|| PyErr::new::<PyValueError, _>("Invalid index"))?;
+        proof_to_json(&proof)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e))
+    }
+}
+
+#[pyfunction]
+fn py_verify_proof(json_proof: String) -> PyResult<bool> {
+    let proof = proof_from_json(&json_proof)
+        .map_err(|e| PyErr::new::<PyValueError, _>(e))?;
+    Ok(verify_proof(&proof))
+}
+
+#[pymodule]
+fn pi_oracle_core(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(py_hash_data, m)?)?;
+    m.add_function(wrap_pyfunction!(py_generate_keypair, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sign_message, m)?)?;
+    m.add_function(wrap_pyfunction!(py_verify_signature, m)?)?;
+    m.add_function(wrap_pyfunction!(py_verify_proof, m)?)?;
+    m.add_class::<PyMerkleTree>()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -378,5 +559,30 @@ mod tests {
         // Wrong message should fail
         let wrong_message = b"different message";
         assert!(!verify_signature(wrong_message, &signature, &public_key));
+    }
+
+    #[test]
+    fn test_proof_json_serialization() {
+        // Build tree and generate proof
+        let data = vec![
+            b"tick1: BTC=50000".as_slice(),
+            b"tick2: BTC=50100".as_slice(),
+            b"tick3: BTC=49900".as_slice(),
+        ];
+        let tree = MerkleTree::new(data);
+        let proof = tree.generate_proof(1).unwrap();
+        
+        // Convert to JSON
+        let json = proof_to_json(&proof).unwrap();
+        println!("Proof JSON:\n{}", json);
+        
+        // Load from JSON
+        let loaded_proof = proof_from_json(&json).unwrap();
+        
+        // Verify loaded proof works
+        assert_eq!(proof.leaf_index, loaded_proof.leaf_index);
+        assert_eq!(proof.leaf_hash, loaded_proof.leaf_hash);
+        assert_eq!(proof.root, loaded_proof.root);
+        assert!(verify_proof(&loaded_proof));
     }
 }
