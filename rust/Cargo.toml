@@ -1,0 +1,25 @@
+# Cargo.toml - Rust's project configuration (like pyproject.toml)
+# This tells Rust what your project is and what dependencies it needs
+
+[package]
+name = "pi-oracle-core"      # Your project name
+version = "0.1.0"             # Version
+edition = "2021"              # Rust edition (like Python 3.9 vs 3.11)
+
+# This makes a library that both Rust and Python can use
+[lib]
+name = "pi_oracle_core"
+crate-type = ["cdylib", "rlib"]  # cdylib for Python, rlib for Rust tests
+
+[dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+hex = "0.4"  # For hex encoding in tests
+
+[profile.release]
+# Optimization settings for maximum speed
+opt-level = 3        # Maximum optimization
+lto = true          # Link-time optimization
+codegen-units = 1   # Single codegen unit (faster but slower compile)
+

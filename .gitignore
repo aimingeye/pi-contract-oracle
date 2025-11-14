@@ -205,3 +205,33 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Rust
+# Compiled files
+rust/target/
+*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project specific
+data/
+*.db
+*.sqlite
+*.log
+node_modules/
+.DS_Store
+
+# Temporary and scratch files
+*.tmp
+*.temp
+*.bak
+*.md~
+scratch/
+notes/
+docs/
