@@ -43,20 +43,21 @@ jobs:
       run: pip install maturin
 
     # ---------------------------------------------------------
-    # BUILD RUST PYTHON EXTENSION (via maturin)
+    # BUILD RUST BINDINGS (WITH VENV PROVIDED BY uv)
     # ---------------------------------------------------------
     - name: Build Rust Python bindings (maturin)
-      run: maturin develop --release
-      working-directory: ./rust  # change to your Rust crate folder!
+      run: uv run maturin develop --release
+      working-directory: ./rust
 
     # ---------------------------------------------------------
-    # INSTALL PYTHON DEPENDENCIES USING UV
+    # INSTALL PYTHON DEPENDENCIES WITH UV
     # ---------------------------------------------------------
     - name: Sync Python env
       run: uv sync
 
     # ---------------------------------------------------------
-    # RUN PYTHON TESTS (importing the Rust-built module)
+    # RUN PYTHON TESTS
     # ---------------------------------------------------------
-    - name: Run Python test file
-      run: uv run python test.py    # or pytest if you're using that
+    - name: Run Python tests
+      run: uv run python test_rust_bindings.py
+
