@@ -1,0 +1,62 @@
+name: Rust + Python (maturin + uv) CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # ---------------------------------------------------------
+    # RUST SETUP
+    # ---------------------------------------------------------
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    # ---------------------------------------------------------
+    # PYTHON + UV + MATURIN
+    # ---------------------------------------------------------
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.12"
+
+    - name: Install uv
+      run: pip install uv
+
+    - name: Install maturin
+      run: pip install maturin
+
+    # ---------------------------------------------------------
+    # BUILD RUST PYTHON EXTENSION (via maturin)
+    # ---------------------------------------------------------
+    - name: Build Rust Python bindings (maturin)
+      run: maturin develop --release
+      working-directory: ./rust  # change to your Rust crate folder!
+
+    # ---------------------------------------------------------
+    # INSTALL PYTHON DEPENDENCIES USING UV
+    # ---------------------------------------------------------
+    - name: Sync Python env
+      run: uv sync
+
+    # ---------------------------------------------------------
+    # RUN PYTHON TESTS (importing the Rust-built module)
+    # ---------------------------------------------------------
+    - name: Run Python test file
+      run: uv run python test.py    # or pytest if you're using that
